@@ -5,7 +5,7 @@ sealed trait RedikkaCommand
 /*  
  * Base class for all operations that targets a specific key 
  */
-sealed trait KeyOperation extends RedikkaCommand {
+sealed trait KeyCommand extends RedikkaCommand {
   def key: String
 }
 
@@ -14,9 +14,9 @@ sealed trait KeyOperation extends RedikkaCommand {
  * value can be a String, Integer, or Double. TODO: let the compiler check this
  * Response is always Ok. Or Error
  */
-case class Set(key: String, value: AnyVal) extends KeyOperation
+case class Set(key: String, value: AnyVal) extends KeyCommand
 
-case class Get(key: String) extends KeyOperation
+case class Get(key: String) extends KeyCommand
 
 sealed trait RedikkaResponse
 

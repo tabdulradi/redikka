@@ -10,7 +10,9 @@ object CoreBuild {
   val settings = BuildSettings.common ++ Seq(
     libraryDependencies ++= Seq(
       scalatest,
-      Akka.actor
+      Akka.actor,
+      Akka.testKit,
+      Akka.persistance
     )
   )
 

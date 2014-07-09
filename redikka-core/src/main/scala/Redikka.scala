@@ -3,9 +3,9 @@ package com.abdulradi.redikka.core
 import akka.actor.{ Actor, ActorRef, Props, ActorLogging }
 import akka.io.{ IO, Tcp }
 import akka.util.ByteString
-import com.abdulradi.redikka.core.api.KeyOperation
+import com.abdulradi.redikka.core.api.KeyCommand
 
-class Redikka extends Actor with ActorLogging { // Should Be Singleton
+class Redikka extends Actor with ActorLogging { // Should Be Singleton on Node. Used by Consistent Hashing Router
   log.debug("Redikka Singleton Actor started at {}", self)
   
   def getValueHolder(key: String): ActorRef = 
@@ -15,7 +15,7 @@ class Redikka extends Actor with ActorLogging { // Should Be Singleton
     context.actorOf(ValueHolder.props(key), key)
   
   def receive = {
-    case op: KeyOperation =>
+    case op: KeyCommand =>
       getValueHolder(op.key) forward op
   }
 }
