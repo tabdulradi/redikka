@@ -12,7 +12,8 @@ object CoreBuild {
       scalatest,
       Akka.actor,
       Akka.testKit,
-      Akka.persistance
+      Akka.persistance,
+      Akka.contrib
     )
   )
 

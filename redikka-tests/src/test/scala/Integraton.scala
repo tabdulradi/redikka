@@ -17,4 +17,3 @@ abstract class StringOpsSpec(c: TestConfig) extends Spec(c) {
 class StringOpsSpecWithScalaRedisOnRedikka extends StringOpsSpec(Redikka via ScalaRedis)
 //class StringOpsSpecWithBrandoOnRedis extends StringOpsSpec(Redis via Brando)
 //class StringOpsSpecWithBrandoOnRedikka extends StringOpsSpec(Redikka via Brando)
-
