@@ -1,26 +1,36 @@
 package com.abdulradi.redikka.core
 
-import akka.actor.{ Actor, ActorRef, Props, ActorLogging }
+import akka.actor.{ ActorSystem }
 import akka.io.{ IO, Tcp }
 import akka.util.ByteString
+import akka.contrib.pattern.{ShardRegion, ClusterSharding}
 import com.abdulradi.redikka.core.api.KeyCommand
 
-class Redikka extends Actor with ActorLogging { // Should Be Singleton on Node. Used by Consistent Hashing Router
-  log.debug("Redikka Singleton Actor started at {}", self)
-  
-  def getValueHolder(key: String): ActorRef = 
-    context.child(key) getOrElse newValueHolder(key)
-    
-  def newValueHolder(key: String): ActorRef = 
-    context.actorOf(ValueHolder.props(key), key)
-  
-  def receive = {
-    case op: KeyCommand =>
-      getValueHolder(op.key) forward op
-  }
-}
-
 object Redikka {
-  def props = 
-    Props[Redikka]
+  val ShardName = "RedikkaValueHolder"
+
+  protected val idExtractor: ShardRegion.IdExtractor = {
+    case cmd: KeyCommand =>
+      (cmd.key, cmd)
+  }
+
+  protected val shardResolver: ShardRegion.ShardResolver = msg => msg match {
+    case cmd: KeyCommand =>
+      (math.abs(cmd.key.hashCode) % 100).toString
+  }
+
+  def init(implicit system: ActorSystem) = {
+    system.log.debug("Redikka starting initialization. ShardName={}", ShardName)
+    ClusterSharding(system).start(
+      typeName = ShardName,
+      entryProps = Some(ValueHolder.props),
+      idExtractor = idExtractor,
+      shardResolver = shardResolver)
+    system.log.debug("Redikka initialization complete")
+  }
+
+  def apply(implicit system: ActorSystem) =
+    ClusterSharding(system).shardRegion(ShardName)
+
+
 }

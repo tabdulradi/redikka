@@ -16,11 +16,11 @@ private case class CommandAck(data: Any) extends Tcp.Event
  */
 class RequestHandler(redikka: ActorRef) extends Actor with ActorLogging {
   import Tcp._
-  
+
   val CRLF = ByteString("\r\n")
-  
+
   val duration = Duration(100, MILLISECONDS)
-  implicit val timeout = Timeout(duration) 
+  implicit val timeout = Timeout(duration)
   implicit val ec = context.dispatcher
 
   def ascii(bytes: ByteString): String =
@@ -29,7 +29,7 @@ class RequestHandler(redikka: ActorRef) extends Actor with ActorLogging {
   def receive = {
     case msg @ Received(data) if (ascii(data).contains("SET"))=>
       val currentSender = sender()
-      (redikka ? Set("key", "some value")).map { 
+      (redikka ? Set("key", "some value")).map {
         case Ok =>
           currentSender ! Write(ByteString("+OK\r\n"), CommandAck("Set"))
       }
@@ -37,11 +37,13 @@ class RequestHandler(redikka: ActorRef) extends Actor with ActorLogging {
       log.debug(s"Got the Ack: $data")
     case msg @ Received(data) if (ascii(data).contains("GET"))=>
       val currentSender = sender()
-      (redikka ? Get("key")).mapTo[Option[String]].map { 
-        case Some(value) =>
+      (redikka ? Get("key")).foreach {
+        case Value(Some(value)) =>
           currentSender ! Write(ByteString("$" + value.length + "\r\n" + value + "\r\n"))
-        case None =>
+        case Value(None) =>
           currentSender ! Write(ByteString("$-1\r\n"))
+        case other =>
+          log.error(s"Got unknown reply from Redikka: $other")
       }
     case PeerClosed =>
       log.debug("PeerClosed")
@@ -50,6 +52,6 @@ class RequestHandler(redikka: ActorRef) extends Actor with ActorLogging {
 }
 
 object RequestHandler {
-  def props(redikka: ActorRef) = 
+  def props(redikka: ActorRef) =
     Props(new RequestHandler(redikka))
 }

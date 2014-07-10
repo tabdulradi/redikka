@@ -7,133 +7,90 @@ import scala.util.{Success, Try, Failure}
 import akka.actor.Actor.Receive
 import akka.actor._
 import akka.persistence.{SnapshotOffer, PersistentActor, RecoveryCompleted}
+import akka.contrib.pattern.ShardRegion.Passivate
 import akka.util.ByteString
 import com.abdulradi.redikka.core.api._
 
-class ValueHolder(key: String) extends PersistentActor with ActorLogging { // Should Be Singleton per key
+class ValueHolder extends PersistentActor with ActorLogging {
   import ValueHolder._
   implicit val ec = context.dispatcher
-  log.debug("ValueHolder({}) started with key {}, now recovering...", self, key)
+
+  log.debug("New ValueHolder started at ({}), now recovering.", self)
+
+  override def persistenceId: String = self.path.parent.name + "-" + self.path.name
 
   var state: State = State(None)
 
-  override def persistenceId = s"redikka-value-$key"
+  context.setReceiveTimeout(2.minutes)
 
   def updateState: Event => Unit = {
     case ValueSet(v) =>
-      state = state.copy(value=Some(v))
-    case Idled =>
-      state = state.copy(hasClearance = true) // Flag, that it is safe to continue working next time the Actor is created.
+      val newState = state.copy(value=Some(v))
+      log.debug("ValueHolder({}) changing state from {} to {}", self, state, newState)
+      state = newState
+    case event =>
+      log.debug("ValueHolder({}) unknown event {}", self, event)
+      ???
   }
 
-  val receiveRecover: Receive = LoggingReceive {
+  def receiveRecover: Receive = LoggingReceive {
     case e: Event =>
       log.debug("ValueHolder({}) got event while recovering: {}", self, e)
       updateState(e)
     case SnapshotOffer(_, snapshot: State) =>
       log.debug("ValueHolder({}) got snapshot offer while recovering: {}", self, snapshot)
       state = snapshot
-    case RecoveryCompleted if state.hasClearance => // We are safe to work now, just revoke clearance
-      log.debug("ValueHolder({}) finished recovering, and got clearance.", self)
-      state = state.copy(hasClearance = false)
-      // TODO: this should be event too
-    case RecoveryCompleted =>
-      log.debug("ValueHolder({}) finished recovering, but doesn't have clearance. This means that either another actor is running on different node, or Actor crashed before. In both cases, we are waiting for Clearance, to continue, if it didn't come within timeout we will continue anyway", self)
-      val timeout = context.system.scheduler.scheduleOnce(5 seconds, self, ClearanceTimeout)
-      context.become(waitingForClearance(timeout))
     case msg =>
       log.debug("ValueHolder({}) received unknown message while recovering: {}", self, msg)
   }
 
-  def waitingForClearance(timeout: Cancellable): Receive = {
-    case AccessCleared =>
-      log.debug("ValueHolder({}) received Clearance message.", self)
-      killOldTimeoutAndBecomeReadyToExecute(timeout)
-    case ClearanceTimeout =>
-      log.warning("ValueHolder({}) timeout during waiting for Clearance message, it is Ok ONLY if Actor crashed in the last time. Else we may need to change the timeout duration.", self)
-      becomeReadyToExecute()
-  }
-
-  def newIdleTimeout() =
-    context.system.scheduler.scheduleOnce(5 seconds, self, IdleTimeout)
-
-  def becomeReadyToExecute() =
-    context.become(executeCommand(newIdleTimeout))
-
-
-  def killOldTimeoutAndBecomeReadyToExecute(timeout: Cancellable) = {
-    timeout.cancel()
-    becomeReadyToExecute()
-  }
-
-  def executeCommand(timeout: Cancellable): Receive = LoggingReceive {
-    case Get =>
-      sender ! state.value
-      killOldTimeoutAndBecomeReadyToExecute(timeout)
-    case cmd: KeyCommand =>
-      val event = validateWriteCommand(cmd)
-      persist(event) {
-        case Success(e) =>
-          updateState(e)
-        case Failure(e) =>
-          ??? // TODO
-      }
-      killOldTimeoutAndBecomeReadyToExecute(timeout)
-    case IdleTimeout =>
-      persist(Idled)(updateState)
-      self ! PoisonPill
-      context.become(dying)
-    case cmd =>
-      log.debug(s"Received Unknown command [$cmd]")
-  }
-
-  val validateWriteCommand: RedikkaCommand => Try[Event] = {
-    case Get(_) => ??? // This is required to remove compiler warning, TODO: I should create another super type for ReadWriteCommands
+  val validateRWCommand: KeyRWCommand => Try[Event] = {
     case Set(_, v) =>
-      ???
+      Success(ValueSet(v.toString)) // TODO: Handle numbers
+    case other =>
+      Failure(new UnsupportedCommand(other))
   }
 
-  val receiveCommand: Receive =
-    executeCommand(newIdleTimeout)
+  def receiveCommand: Receive = LoggingReceive {
+    case Get(_) =>
+      val value = Value(state.value)
+      log.debug("ValueHolder({}) got Get Command replying with ({}), to sender ({})", self, value, sender())
+      sender() ! value
+    case cmd: KeyRWCommand =>
+      validateRWCommand(cmd) match {
+        case Success(event) =>
+          log.debug("ValueHolder({}) successfully validated cmd ({}), to event ({})", self, cmd, event)
+          persist(event) { e =>
+            log.debug("ValueHolder({}) successfully persisted event ({})", self, cmd, event)
+            updateState(e)
+            sender() ! Ok
+          }
+        case Failure(e) =>
+          log.debug("ValueHolder({}) failed to validate cmd ({}). Error was ({})", self, cmd, e)
+          ???
+      }
+  }
 
-  def dying: Receive = LoggingReceive {
-    case cmd: KeyCommand =>
-      ???
-      /* TODO:
-       Akhh! What should we do?
-       1. Halt shutdown procedure, comeback to live again, set clearance to false.
-          Problems:
-            If cluster rebalanced in this very moment, there is a risk that similar actor is created on another node,
-            and has the clearance now!
-
-       2. Forward the command back to NodeManager (parent), hopefully we will be dead already when it process them.
-          Parent should crate a new actor now
-          Problem:
-            What happens to other messages in inbox after the poison pill??
-
-       3. Inform parent first that we want to die, wait for it's approval.
-          Parent marks this actor as toBeKilled, and send Die message. Waits for it to be really killed.
-          Any message arrived in between, should be stashed by parent.
-          Problems:
-          What happens if cluster re-balance in the same time?
-            Parent would be stashing messages that may belong to other node.
-              Should we resend them again to the Consistent Hashing Router to be sure?
-                But this means that later messages (from client) may have arrive the new Node BEFORE old messages trapped here!
-       */
+  override def unhandled(msg: Any): Unit = msg match {
+    case ReceiveTimeout =>
+      log.debug("ValueHolder({}) got ReceiveTimeout for being idle.", self)
+      context.parent ! Passivate(stopMessage = PoisonPill)
+    case other =>
+      log.debug("ValueHolder({}) got unknown command ({})", self, other)
+      super.unhandled(msg)
   }
 }
 
 object ValueHolder {
-  def props(key: String) =
-    Props(new ValueHolder(key))
+  def props(): Props =
+    Props(new ValueHolder)
 
-  case class State(value: Option[String] = None, hasClearance: Boolean = true)
+  class UnsupportedCommand(cmd: Any) extends Exception
 
-  case object AccessCleared
-  case object ClearanceTimeout
-  case object IdleTimeout
+  case class State(value: Option[String] = None)
 
   sealed trait Event
-  case object Idled extends Event
+
+  @SerialVersionUID(1L)
   case class ValueSet(value: String) extends Event
 }
