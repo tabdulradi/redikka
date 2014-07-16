@@ -11,7 +11,7 @@ object TcpBuild {
     libraryDependencies ++= Seq(
       scalatest,
       Akka.actor,
-      Clients.scalaRedis // Serialization and Protcol
+      Clients.scalaRedis // Serialization and Protocol
     )
   )
 
