@@ -31,6 +31,4 @@ object Redikka {
 
   def apply(implicit system: ActorSystem) =
     ClusterSharding(system).shardRegion(ShardName)
-
-
 }
